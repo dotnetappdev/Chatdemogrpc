@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+option csharp_namespace = "ChatApp.Shared.Grpc";
+
+package chat;
+
+// P2P Chat Service - each client hosts this service for direct peer communication
+service ChatService {
+    // Send a direct message to this peer
+    rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
+
+    // Subscribe to receive messages via server-streaming (push from peer)
+    rpc Subscribe (SubscribeRequest) returns (stream ChatMessageProto);
+
+    // Ping to check if a peer is online
+    rpc Ping (PingRequest) returns (PingResponse);
+
+    // Notify that user is typing
+    rpc SendTypingIndicator (TypingRequest) returns (TypingResponse);
+}
+
+message SendMessageRequest {
+    ChatMessageProto message = 1;
+}
+
+message SendMessageResponse {
+    bool success = 1;
+    string message_id = 2;
+    string error = 3;
+}
+
+message SubscribeRequest {
+    string subscriber_name = 1;
+}
+
+message ChatMessageProto {
+    string id = 1;
+    string from_user = 2;
+    string to_user = 3;
+    string content = 4;
+    string timestamp = 5;
+    MessageType type = 6;
+}
+
+enum MessageType {
+    TEXT = 0;
+    TYPING_STARTED = 1;
+    TYPING_STOPPED = 2;
+    USER_JOINED = 3;
+    USER_LEFT = 4;
+}
+
+message PingRequest {
+    string from_user = 1;
+}
+
+message PingResponse {
+    bool online = 1;
+    string user_name = 2;
+    string display_name = 3;
+}
+
+message TypingRequest {
+    string from_user = 1;
+    string to_user = 2;
+    bool is_typing = 3;
+}
+
+message TypingResponse {
+    bool acknowledged = 1;
+}
