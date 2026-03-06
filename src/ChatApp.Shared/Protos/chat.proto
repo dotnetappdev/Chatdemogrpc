@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+option csharp_namespace = "ChatApp.Shared.Grpc";
+
+package chat;
+
+// P2P Chat Service — every node hosts this service.
+// Peers connect directly; there is no central server.
+service ChatService {
+    // Send a direct message to this peer (unary)
+    rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
+
+    // Subscribe to receive pushed messages (server-streaming)
+    rpc Subscribe (SubscribeRequest) returns (stream ChatMessageProto);
+
+    // Health-check — also used to confirm a peer is reachable before adding it
+    rpc Ping (PingRequest) returns (PingResponse);
+
+    // Typing indicator (fire-and-forget unary)
+    rpc SendTypingIndicator (TypingRequest) returns (TypingResponse);
+
+    // Decentralised peer exchange — "tell me who you know"
+    // Enables mesh discovery beyond the local subnet: when you connect to any
+    // peer you call this and learn their peers, then connect to those too.
+    rpc GetKnownPeers (GetKnownPeersRequest) returns (GetKnownPeersResponse);
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────
+
+message SendMessageRequest {
+    ChatMessageProto message = 1;
+}
+
+message SendMessageResponse {
+    bool success = 1;
+    string message_id = 2;
+    string error = 3;
+}
+
+message SubscribeRequest {
+    string subscriber_name = 1;
+}
+
+message ChatMessageProto {
+    string id = 1;
+    string from_user = 2;
+    string to_user = 3;
+    string content = 4;
+    string timestamp = 5;
+    MessageType type = 6;
+}
+
+enum MessageType {
+    TEXT = 0;
+    TYPING_STARTED = 1;
+    TYPING_STOPPED = 2;
+    USER_JOINED = 3;
+    USER_LEFT = 4;
+
+    // Contact management — delivered via the standard SendMessage RPC so that
+    // contact requests survive offline periods through the offline queue.
+    CONTACT_REQUEST  = 5;  // from_user wants to add to_user as a contact
+    CONTACT_ACCEPTED = 6;  // to_user accepted the request
+    CONTACT_DECLINED = 7;  // to_user declined the request
+}
+
+message PingRequest {
+    string from_user = 1;
+}
+
+message PingResponse {
+    bool online = 1;
+    string user_name = 2;
+    string display_name = 3;
+}
+
+message TypingRequest {
+    string from_user = 1;
+    string to_user = 2;
+    bool is_typing = 3;
+}
+
+message TypingResponse {
+    bool acknowledged = 1;
+}
+
+// ── Peer exchange (gossip) ─────────────────────────────────────────────────
+
+message GetKnownPeersRequest {
+    string requesting_user = 1;
+}
+
+message GetKnownPeersResponse {
+    repeated PeerInfo peers = 1;
+}
+
+// A peer entry returned during gossip / peer exchange
+message PeerInfo {
+    string user_name = 1;
+    string display_name = 2;
+    string ip_address = 3;
+    int32 grpc_port = 4;
+    int64 last_seen_unix_utc = 5;
+}

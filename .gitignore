@@ -1,0 +1,29 @@
+## .NET build artifacts
+obj/
+bin/
+*.user
+*.suo
+.vs/
+.vscode/
+
+## NuGet
+*.nupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## SQLite databases (runtime data — not committed)
+*.db
+*.db-shm
+*.db-wal
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Rider
+.idea/
+
+## Logs
+*.log
