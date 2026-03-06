@@ -13,6 +13,12 @@ public interface IPeerNetworkService : IDisposable
     /// <summary>Fired (on any thread) when a peer is confirmed reachable.</summary>
     event EventHandler<PeerUser>? PeerConnected;
 
+    /// <summary>
+    /// Fired when offline-queued messages are flushed to a peer that just came online.
+    /// The int is the number of messages delivered.
+    /// </summary>
+    event EventHandler<(string ToUser, int Count)>? PendingMessagesDelivered;
+
     /// <summary>Send a chat message directly to a peer via gRPC.</summary>
     Task<bool> SendMessageAsync(PeerUser peer, ChatMessageProto message,
         CancellationToken ct = default);

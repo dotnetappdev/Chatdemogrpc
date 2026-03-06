@@ -56,6 +56,12 @@ enum MessageType {
     TYPING_STOPPED = 2;
     USER_JOINED = 3;
     USER_LEFT = 4;
+
+    // Contact management — delivered via the standard SendMessage RPC so that
+    // contact requests survive offline periods through the offline queue.
+    CONTACT_REQUEST  = 5;  // from_user wants to add to_user as a contact
+    CONTACT_ACCEPTED = 6;  // to_user accepted the request
+    CONTACT_DECLINED = 7;  // to_user declined the request
 }
 
 message PingRequest {

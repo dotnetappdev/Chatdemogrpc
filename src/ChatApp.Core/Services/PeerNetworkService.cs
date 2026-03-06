@@ -16,24 +16,31 @@ namespace ChatApp.Core.Services;
 ///  4. We call GetKnownPeers on them (one-hop gossip).
 ///  5. For each peer they return that we don't yet know, we attempt to
 ///     Ping + persist them too — without further gossip (depth limit = 1).
+///  6. Any offline-queued messages for that peer are drained.
 ///
 /// This creates a self-healing mesh: every node learns about every other
 /// node after at most one introduction, with no central coordinator.
 /// </summary>
 public sealed class PeerNetworkService : IPeerNetworkService
 {
-    private readonly IPeerChannelFactory _factory;
-    private readonly IKnownPeersStore    _store;
+    private readonly IPeerChannelFactory  _factory;
+    private readonly IKnownPeersStore     _store;
+    private readonly IOfflineQueueService _offlineQueue;
 
     // Set by the ViewModel after login
     public string LocalUserName { get; set; } = string.Empty;
 
-    public event EventHandler<PeerUser>? PeerConnected;
+    public event EventHandler<PeerUser>?                     PeerConnected;
+    public event EventHandler<(string ToUser, int Count)>?   PendingMessagesDelivered;
 
-    public PeerNetworkService(IPeerChannelFactory factory, IKnownPeersStore store)
+    public PeerNetworkService(
+        IPeerChannelFactory  factory,
+        IKnownPeersStore     store,
+        IOfflineQueueService offlineQueue)
     {
-        _factory = factory;
-        _store   = store;
+        _factory      = factory;
+        _store        = store;
+        _offlineQueue = offlineQueue;
     }
 
     // ── Message delivery ─────────────────────────────────────────────────
@@ -62,7 +69,7 @@ public sealed class PeerNetworkService : IPeerNetworkService
     // ── Decentralised peer exchange ───────────────────────────────────────
 
     /// <summary>
-    /// Ping + persist a peer, then gossip one hop to discover their network.
+    /// Ping + persist a peer, drain the offline queue, then gossip one hop.
     /// </summary>
     public async Task ConnectAndExchangeAsync(string host, int port,
         CancellationToken ct = default)
@@ -86,7 +93,10 @@ public sealed class PeerNetworkService : IPeerNetworkService
 
         PeerConnected?.Invoke(this, peer);
 
-        // One-hop gossip: ask the peer who they know
+        // ── Drain offline queue ───────────────────────────────────────────
+        await DrainOfflineQueueAsync(peer, ch, ct);
+
+        // ── One-hop gossip ────────────────────────────────────────────────
         var gossip = await ch.GetKnownPeersAsync(LocalUserName, ct);
         if (gossip is null) return;
 
@@ -94,7 +104,6 @@ public sealed class PeerNetworkService : IPeerNetworkService
         {
             if (info.UserName == LocalUserName) continue;
 
-            // Attempt to connect to each peer they know (depth = 1 only)
             _ = Task.Run(async () =>
             {
                 var theirCh   = _factory.Get(info.IpAddress, info.GrpcPort);
@@ -105,16 +114,42 @@ public sealed class PeerNetworkService : IPeerNetworkService
                     theirPing.UserName, theirPing.DisplayName,
                     info.IpAddress, info.GrpcPort, DateTime.UtcNow));
 
-                PeerConnected?.Invoke(this, new PeerUser
+                var theirPeer = new PeerUser
                 {
                     UserName    = theirPing.UserName,
                     DisplayName = theirPing.DisplayName,
                     IpAddress   = info.IpAddress,
                     GrpcPort    = info.GrpcPort,
                     Status      = UserStatus.Online
-                });
+                };
+                PeerConnected?.Invoke(this, theirPeer);
+
+                await DrainOfflineQueueAsync(theirPeer, theirCh, ct);
             }, ct);
         }
+    }
+
+    // ── Offline queue drain ───────────────────────────────────────────────
+
+    private async Task DrainOfflineQueueAsync(PeerUser peer, IPeerChannel ch,
+        CancellationToken ct)
+    {
+        var pending = await _offlineQueue.GetPendingWithIdsAsync(peer.UserName);
+        if (pending.Count == 0) return;
+
+        var delivered = 0;
+        foreach (var (rowId, msg) in pending)
+        {
+            var ok = await ch.SendMessageAsync(msg, ct);
+            if (ok)
+            {
+                await _offlineQueue.RemoveAsync(rowId);
+                delivered++;
+            }
+        }
+
+        if (delivered > 0)
+            PendingMessagesDelivered?.Invoke(this, (peer.UserName, delivered));
     }
 
     public void Dispose() => (_factory as IDisposable)?.Dispose();

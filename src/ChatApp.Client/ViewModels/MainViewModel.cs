@@ -19,13 +19,15 @@ namespace ChatApp.Client.ViewModels;
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
-    // ── Core services (injected / created at login) ───────────────────────
+    // ── Core services ─────────────────────────────────────────────────────
     private readonly LocalDb              _db;
     private readonly IHistoryService      _history;
     private readonly IKnownPeersStore     _peerStore;
     private readonly IDiscoveryService    _discovery;
     private readonly IPeerNetworkService  _network;
     private readonly GrpcHostService      _grpcHost;
+    private readonly IContactService      _contacts;
+    private readonly IOfflineQueueService _offlineQueue;
     private          ApiService?          _api;
 
     // ── Observable state ─────────────────────────────────────────────────
@@ -45,14 +47,24 @@ public partial class MainViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HasSelectedPeer))]
     private PeerUser? _selectedPeer;
 
-    [ObservableProperty] private string _messageInput  = string.Empty;
-    [ObservableProperty] private string _statusText    = "Not connected";
+    [ObservableProperty] private string _messageInput   = string.Empty;
+    [ObservableProperty] private string _statusText     = "Not connected";
     [ObservableProperty] private bool   _isBusy;
-    [ObservableProperty] private string _peerIpInput   = string.Empty;
-    [ObservableProperty] private string _peerPortInput = string.Empty;
+    [ObservableProperty] private string _peerIpInput    = string.Empty;
+    [ObservableProperty] private string _peerPortInput  = string.Empty;
     [ObservableProperty] private int    _localGrpcPort;
     [ObservableProperty] private bool   _isPeerTyping;
     [ObservableProperty] private bool   _apiConnected;
+
+    /// <summary>Add-contact textbox on the Contacts panel.</summary>
+    [ObservableProperty] private string _addContactUserName = string.Empty;
+
+    /// <summary>Shown as an in-app notification banner (empty = hidden).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNotification))]
+    private string _notificationText = string.Empty;
+
+    public bool HasNotification => !string.IsNullOrEmpty(NotificationText);
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(NetworkSummary))]
@@ -63,29 +75,36 @@ public partial class MainViewModel : ObservableObject
     public string NetworkSummary =>
         $"{OnlineUsers.Count} online  ·  {KnownPeerCount} ever seen";
 
-    public ObservableCollection<PeerUser>    OnlineUsers { get; } = [];
-    public ObservableCollection<ChatMessage> Messages    { get; } = [];
+    public ObservableCollection<PeerUser>         OnlineUsers      { get; } = [];
+    public ObservableCollection<ChatMessage>       Messages         { get; } = [];
+    /// <summary>All saved contacts (accepted + pending + blocked).</summary>
+    public ObservableCollection<ContactViewModel>  Contacts         { get; } = [];
+    /// <summary>Incoming pending contact requests — shown as a notification list.</summary>
+    public ObservableCollection<ContactViewModel>  PendingRequests  { get; } = [];
 
     // ── Constructor ──────────────────────────────────────────────────────
 
     public MainViewModel()
     {
-        _db        = LocalDb.CreateForProduction();
-        _peerStore = new KnownPeersStore(_db);
-        _history   = new HistoryService(_db);
+        _db           = LocalDb.CreateForProduction();
+        _peerStore    = new KnownPeersStore(_db);
+        _history      = new HistoryService(_db);
+        _contacts     = new ContactService(_db);
+        _offlineQueue = new OfflineQueueService(_db);
 
         var channelFactory = new GrpcPeerChannelFactory();
-        _network           = new PeerNetworkService(channelFactory, _peerStore);
+        _network           = new PeerNetworkService(channelFactory, _peerStore, _offlineQueue);
         _discovery         = new UdpDiscoveryService();
 
-        var chatSvc = new PeerChatService(_peerStore);
+        var chatSvc = new PeerChatService(_peerStore, _contacts);
         _grpcHost   = new GrpcHostService(chatSvc);
 
-        chatSvc.MessageReceived         += OnGrpcMessageReceived;
-        chatSvc.TypingIndicatorReceived += OnTypingIndicatorReceived;
-        _network.PeerConnected          += OnPeerConnected;
-        _discovery.PeerDiscovered       += OnPeerDiscovered;
-        _discovery.PeerLeft             += OnPeerLeft;
+        chatSvc.MessageReceived                  += OnGrpcMessageReceived;
+        chatSvc.TypingIndicatorReceived          += OnTypingIndicatorReceived;
+        _network.PeerConnected                   += OnPeerConnected;
+        _network.PendingMessagesDelivered        += OnPendingMessagesDelivered;
+        _discovery.PeerDiscovered                += OnPeerDiscovered;
+        _discovery.PeerLeft                      += OnPeerLeft;
     }
 
     // ── Commands ─────────────────────────────────────────────────────────
@@ -127,6 +146,9 @@ public partial class MainViewModel : ObservableObject
                 ApiConnected = user is not null;
             }
 
+            // ── Load saved contacts ───────────────────────────────────────
+            await RefreshContactsAsync();
+
             // ── Bootstrap: reconnect to every previously-known peer ───────
             var saved = await _peerStore.GetAllAsync();
             KnownPeerCount = saved.Count;
@@ -159,11 +181,14 @@ public partial class MainViewModel : ObservableObject
         LocalUserContext.CurrentUserName    = string.Empty;
         LocalUserContext.CurrentDisplayName = string.Empty;
 
-        ApiConnected = false;
+        ApiConnected    = false;
+        NotificationText = string.Empty;
         OnlineUsers.Clear();
         Messages.Clear();
-        SelectedPeer = null;
-        StatusText   = "Not connected";
+        Contacts.Clear();
+        PendingRequests.Clear();
+        SelectedPeer    = null;
+        StatusText      = "Not connected";
     }
 
     [RelayCommand]
@@ -171,8 +196,8 @@ public partial class MainViewModel : ObservableObject
     {
         if (SelectedPeer is null || string.IsNullOrWhiteSpace(MessageInput)) return;
 
-        var content   = MessageInput.Trim();
-        MessageInput  = string.Empty;
+        var content  = MessageInput.Trim();
+        MessageInput = string.Empty;
 
         var proto = new ChatMessageProto
         {
@@ -193,8 +218,12 @@ public partial class MainViewModel : ObservableObject
             var sent = await _network.SendMessageAsync(SelectedPeer, proto);
 
             if (!sent)
+            {
+                // Peer is offline — queue for later delivery
+                await _offlineQueue.EnqueueAsync(proto);
                 Application.Current.Dispatcher.Invoke(() =>
-                    StatusText = $"⚠ Could not reach {SelectedPeer.DisplayName}");
+                    StatusText = $"📭 {SelectedPeer.DisplayName} is offline — message queued");
+            }
 
             await _history.SaveAsync(CurrentUserName, SelectedPeer.UserName, content);
 
@@ -214,7 +243,6 @@ public partial class MainViewModel : ObservableObject
         var history = await _history.GetConversationAsync(
             CurrentUserName, peer.UserName, localUser: CurrentUserName);
 
-        // Fall back to API history if local is empty
         if (history.Count == 0 && _api is not null && ApiConnected)
         {
             var apiMsgs = await _api.GetConversationAsync(CurrentUserName, peer.UserName);
@@ -247,6 +275,145 @@ public partial class MainViewModel : ObservableObject
         PeerIpInput = PeerPortInput = string.Empty;
     }
 
+    // ── Contact commands ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Send a contact request to a peer that is currently online.
+    /// The request is delivered via the standard gRPC SendMessage RPC using
+    /// message type CONTACT_REQUEST. If the peer is offline the request is
+    /// queued and delivered automatically when they come back online.
+    /// </summary>
+    [RelayCommand]
+    private async Task SendContactRequestAsync()
+    {
+        var target = AddContactUserName.Trim();
+        if (string.IsNullOrEmpty(target) || target == CurrentUserName) return;
+
+        // Check we haven't already sent/have a relationship with this user
+        var existing = await _contacts.GetAsync(target);
+        if (existing is not null)
+        {
+            StatusText = $"Already have a contact relationship with {target}";
+            return;
+        }
+
+        var proto = new ChatMessageProto
+        {
+            Id        = Guid.NewGuid().ToString(),
+            FromUser  = CurrentUserName,
+            ToUser    = target,
+            Content   = CurrentDisplayName, // display name carried as content
+            Timestamp = DateTime.UtcNow.ToString("o"),
+            Type      = MessageType.ContactRequest
+        };
+
+        // Save outgoing pending record locally
+        await _contacts.UpsertAsync(new ContactEntry(
+            target, target, ContactStatus.Pending, IsIncoming: false, DateTime.UtcNow));
+        await RefreshContactsAsync();
+
+        // Deliver if online, queue if offline
+        var peer = OnlineUsers.FirstOrDefault(u => u.UserName == target);
+        if (peer is not null)
+        {
+            await _network.SendMessageAsync(peer, proto);
+            StatusText = $"📨 Contact request sent to {target}";
+        }
+        else
+        {
+            await _offlineQueue.EnqueueAsync(proto);
+            StatusText = $"📭 Contact request queued — {target} is offline";
+        }
+
+        AddContactUserName = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task AcceptContactAsync(ContactViewModel contact)
+    {
+        await _contacts.UpsertAsync(new ContactEntry(
+            contact.UserName, contact.DisplayName,
+            ContactStatus.Accepted, IsIncoming: true, DateTime.UtcNow));
+
+        // Send acceptance back to the requester
+        var proto = new ChatMessageProto
+        {
+            Id        = Guid.NewGuid().ToString(),
+            FromUser  = CurrentUserName,
+            ToUser    = contact.UserName,
+            Content   = CurrentDisplayName,
+            Timestamp = DateTime.UtcNow.ToString("o"),
+            Type      = MessageType.ContactAccepted
+        };
+
+        var peer = OnlineUsers.FirstOrDefault(u => u.UserName == contact.UserName);
+        if (peer is not null)
+            await _network.SendMessageAsync(peer, proto);
+        else
+            await _offlineQueue.EnqueueAsync(proto);
+
+        await RefreshContactsAsync();
+        StatusText = $"✅ You are now contacts with {contact.DisplayName}";
+    }
+
+    [RelayCommand]
+    private async Task DeclineContactAsync(ContactViewModel contact)
+    {
+        // Send decline notification if the requester is online
+        var proto = new ChatMessageProto
+        {
+            Id        = Guid.NewGuid().ToString(),
+            FromUser  = CurrentUserName,
+            ToUser    = contact.UserName,
+            Content   = string.Empty,
+            Timestamp = DateTime.UtcNow.ToString("o"),
+            Type      = MessageType.ContactDeclined
+        };
+
+        var peer = OnlineUsers.FirstOrDefault(u => u.UserName == contact.UserName);
+        if (peer is not null)
+            await _network.SendMessageAsync(peer, proto);
+        else
+            await _offlineQueue.EnqueueAsync(proto);
+
+        // Store as declined so we don't prompt again
+        await _contacts.UpsertAsync(new ContactEntry(
+            contact.UserName, contact.DisplayName,
+            ContactStatus.Declined, IsIncoming: true, DateTime.UtcNow));
+
+        await RefreshContactsAsync();
+        StatusText = $"❌ Declined contact request from {contact.DisplayName}";
+    }
+
+    [RelayCommand]
+    private async Task BlockContactAsync(string userName)
+    {
+        if (string.IsNullOrWhiteSpace(userName)) return;
+
+        var existing = await _contacts.GetAsync(userName);
+        await _contacts.UpsertAsync(new ContactEntry(
+            userName,
+            existing?.DisplayName ?? userName,
+            ContactStatus.Blocked,
+            existing?.IsIncoming ?? false,
+            DateTime.UtcNow));
+
+        await RefreshContactsAsync();
+        StatusText = $"🚫 {userName} blocked";
+    }
+
+    [RelayCommand]
+    private async Task UnblockContactAsync(string userName)
+    {
+        await _contacts.RemoveAsync(userName);
+        await RefreshContactsAsync();
+        StatusText = $"✅ {userName} unblocked";
+    }
+
+    /// <summary>Dismiss the in-app notification banner.</summary>
+    [RelayCommand]
+    private void DismissNotification() => NotificationText = string.Empty;
+
     // ── Event handlers from Core ─────────────────────────────────────────
 
     private void OnPeerConnected(object? sender, PeerUser peer)
@@ -260,6 +427,18 @@ public partial class MainViewModel : ObservableObject
                 KnownPeerCount = all.Count;
                 OnPropertyChanged(nameof(NetworkSummary));
             });
+        });
+    }
+
+    private void OnPendingMessagesDelivered(object? sender, (string ToUser, int Count) e)
+    {
+        // This fires on a background thread — marshal to UI thread for notification
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            var msg = e.Count == 1
+                ? $"📬 1 queued message delivered to {e.ToUser}"
+                : $"📬 {e.Count} queued messages delivered to {e.ToUser}";
+            ShowNotification(msg);
         });
     }
 
@@ -283,25 +462,92 @@ public partial class MainViewModel : ObservableObject
 
     private void OnGrpcMessageReceived(object? sender, ChatMessageProto msg)
     {
-        Application.Current.Dispatcher.Invoke(() =>
-        {
-            if (SelectedPeer?.UserName == msg.FromUser)
-                AddMessageToUi(msg.Id, msg.FromUser, msg.ToUser, msg.Content,
-                    DateTime.TryParse(msg.Timestamp, out var ts) ? ts : DateTime.Now,
-                    isMine: false);
-            else
-            {
-                var peer = OnlineUsers.FirstOrDefault(u => u.UserName == msg.FromUser);
-                if (peer is not null) peer.UnreadCount++;
-            }
-        });
+        Application.Current.Dispatcher.Invoke(() => HandleIncomingMessage(msg));
 
         _ = Task.Run(async () =>
         {
-            await _history.SaveAsync(msg.FromUser, msg.ToUser, msg.Content);
-            if (_api is not null && ApiConnected)
-                await _api.SaveMessageAsync(new SaveMessageRequest
-                    { FromUser = msg.FromUser, ToUser = msg.ToUser, Content = msg.Content });
+            // Only persist TEXT messages to history
+            if (msg.Type == MessageType.Text)
+            {
+                await _history.SaveAsync(msg.FromUser, msg.ToUser, msg.Content);
+                if (_api is not null && ApiConnected)
+                    await _api.SaveMessageAsync(new SaveMessageRequest
+                        { FromUser = msg.FromUser, ToUser = msg.ToUser, Content = msg.Content });
+            }
+        });
+    }
+
+    private void HandleIncomingMessage(ChatMessageProto msg)
+    {
+        switch (msg.Type)
+        {
+            case MessageType.Text:
+                if (SelectedPeer?.UserName == msg.FromUser)
+                    AddMessageToUi(msg.Id, msg.FromUser, msg.ToUser, msg.Content,
+                        DateTime.TryParse(msg.Timestamp, out var ts) ? ts : DateTime.Now,
+                        isMine: false);
+                else
+                {
+                    var peer = OnlineUsers.FirstOrDefault(u => u.UserName == msg.FromUser);
+                    if (peer is not null) peer.UnreadCount++;
+                }
+                break;
+
+            case MessageType.ContactRequest:
+                _ = Task.Run(() => HandleContactRequestAsync(msg));
+                break;
+
+            case MessageType.ContactAccepted:
+                _ = Task.Run(() => HandleContactAcceptedAsync(msg));
+                break;
+
+            case MessageType.ContactDeclined:
+                _ = Task.Run(() => HandleContactDeclinedAsync(msg));
+                break;
+        }
+    }
+
+    private async Task HandleContactRequestAsync(ChatMessageProto msg)
+    {
+        // Save incoming pending request (content = sender's display name)
+        var displayName = string.IsNullOrWhiteSpace(msg.Content) ? msg.FromUser : msg.Content;
+        await _contacts.UpsertAsync(new ContactEntry(
+            msg.FromUser, displayName,
+            ContactStatus.Pending, IsIncoming: true, DateTime.UtcNow));
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            RefreshContactsAsync().ConfigureAwait(false);
+            ShowNotification($"📩 {displayName} wants to add you as a contact");
+        });
+    }
+
+    private async Task HandleContactAcceptedAsync(ChatMessageProto msg)
+    {
+        var displayName = string.IsNullOrWhiteSpace(msg.Content) ? msg.FromUser : msg.Content;
+        await _contacts.UpsertAsync(new ContactEntry(
+            msg.FromUser, displayName,
+            ContactStatus.Accepted, IsIncoming: false, DateTime.UtcNow));
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            RefreshContactsAsync().ConfigureAwait(false);
+            ShowNotification($"✅ {displayName} accepted your contact request");
+        });
+    }
+
+    private async Task HandleContactDeclinedAsync(ChatMessageProto msg)
+    {
+        var existing = await _contacts.GetAsync(msg.FromUser);
+        await _contacts.UpsertAsync(new ContactEntry(
+            msg.FromUser,
+            existing?.DisplayName ?? msg.FromUser,
+            ContactStatus.Declined, IsIncoming: false, DateTime.UtcNow));
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            RefreshContactsAsync().ConfigureAwait(false);
+            ShowNotification($"❌ {msg.FromUser} declined your contact request");
         });
     }
 
@@ -315,6 +561,39 @@ public partial class MainViewModel : ObservableObject
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    private async Task RefreshContactsAsync()
+    {
+        var all     = await _contacts.GetByStatusAsync(
+            ContactStatus.Pending, ContactStatus.Accepted, ContactStatus.Blocked);
+        var pending = all.Where(c => c.IsIncoming && c.Status == ContactStatus.Pending).ToList();
+
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            Contacts.Clear();
+            foreach (var c in all) Contacts.Add(ContactViewModel.FromEntry(c));
+
+            PendingRequests.Clear();
+            foreach (var c in pending) PendingRequests.Add(ContactViewModel.FromEntry(c));
+
+            OnPropertyChanged(nameof(PendingRequests));
+        });
+    }
+
+    private void ShowNotification(string text)
+    {
+        NotificationText = text;
+        // Auto-dismiss after 8 seconds
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(8000);
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                if (NotificationText == text) // only if still showing this notification
+                    NotificationText = string.Empty;
+            });
+        });
+    }
 
     private void UpsertOnlineUser(PeerUser peer)
     {
@@ -354,5 +633,3 @@ public partial class MainViewModel : ObservableObject
         catch { return "127.0.0.1"; }
     }
 }
-
-

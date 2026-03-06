@@ -206,10 +206,15 @@
                 <!-- Contacts header + refresh -->
                 <Grid Grid.Row="2">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>  <!-- section header -->
+                        <RowDefinition Height="Auto"/>  <!-- add contact -->
+                        <RowDefinition Height="Auto"/>  <!-- pending requests header -->
+                        <RowDefinition Height="Auto"/>  <!-- pending requests list -->
+                        <RowDefinition Height="Auto"/>  <!-- online header -->
+                        <RowDefinition Height="*"/>     <!-- online list -->
                     </Grid.RowDefinitions>
 
+                    <!-- Section header -->
                     <Border Grid.Row="0" Padding="16,8,16,4">
                         <Grid>
                             <TextBlock Text="CONTACTS" FontSize="10" FontWeight="Bold"
@@ -222,8 +227,119 @@
                         </Grid>
                     </Border>
 
-                    <!-- Contacts list -->
-                    <ListBox Grid.Row="1"
+                    <!-- Add Contact -->
+                    <Border Grid.Row="1" Margin="8,0,8,6" Padding="8,6"
+                            Background="#1E1E30" CornerRadius="6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0"
+                                     Style="{StaticResource ModernTextBox}"
+                                     Text="{Binding AddContactUserName, UpdateSourceTrigger=PropertyChanged}"
+                                     Background="#2D2D3F" Foreground="White" BorderBrush="#3D3D5C"
+                                     VerticalContentAlignment="Center"
+                                     FontSize="12" Margin="0,0,6,0">
+                                <TextBox.Resources>
+                                    <VisualBrush x:Key="HintBrush" AlignmentX="Left" AlignmentY="Center" Stretch="None">
+                                        <VisualBrush.Visual>
+                                            <TextBlock Text="Add contact (username)" Foreground="#64748B" Margin="10,0"/>
+                                        </VisualBrush.Visual>
+                                    </VisualBrush>
+                                </TextBox.Resources>
+                            </TextBox>
+                            <Button Grid.Column="1"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Command="{Binding SendContactRequestCommand}"
+                                    Content="＋ Add"
+                                    FontSize="11" Padding="8,5"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- Pending Requests header (only when there are pending requests) -->
+                    <Border Grid.Row="2" Padding="16,4,16,2"
+                            Visibility="{Binding PendingRequests.Count,
+                                Converter={StaticResource ZeroToCollapsed}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="#DC2626" CornerRadius="10" Padding="5,1" Margin="0,0,6,0">
+                                <TextBlock Text="{Binding PendingRequests.Count}"
+                                           FontSize="10" FontWeight="Bold" Foreground="White"/>
+                            </Border>
+                            <TextBlock Text="CONTACT REQUESTS" FontSize="10" FontWeight="Bold"
+                                       Foreground="#EF4444" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Pending Requests list -->
+                    <ItemsControl Grid.Row="3"
+                                  ItemsSource="{Binding PendingRequests}"
+                                  Visibility="{Binding PendingRequests.Count,
+                                      Converter={StaticResource ZeroToCollapsed}}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type models:ContactViewModel}">
+                                <Border Margin="8,2" Padding="10,8"
+                                        Background="#1E1E30" CornerRadius="6">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="📩 " FontSize="13"/>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayName}"
+                                                           FontSize="12" FontWeight="SemiBold"
+                                                           Foreground="White"/>
+                                                <TextBlock Text="{Binding UserName}"
+                                                           FontSize="10" Foreground="#94A3B8"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Orientation="Horizontal">
+                                            <Button Style="{StaticResource PrimaryButton}"
+                                                    Command="{Binding DataContext.AcceptContactCommand,
+                                                        RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Content="✓ Accept"
+                                                    FontSize="10" Padding="8,4" Margin="0,0,6,0"/>
+                                            <Button Command="{Binding DataContext.DeclineContactCommand,
+                                                        RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                    CommandParameter="{Binding}"
+                                                    Content="✗ Decline"
+                                                    FontSize="10" Padding="8,4"
+                                                    Background="#374151" Foreground="#D1D5DB"
+                                                    BorderThickness="0" Cursor="Hand">
+                                                <Button.Template>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                CornerRadius="6"
+                                                                Padding="{TemplateBinding Padding}">
+                                                            <ContentPresenter HorizontalAlignment="Center"
+                                                                              VerticalAlignment="Center"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background" Value="#4B5563"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Button.Template>
+                                            </Button>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <!-- Online peers header -->
+                    <Border Grid.Row="4" Padding="16,6,16,2">
+                        <TextBlock Text="ONLINE NOW" FontSize="10" FontWeight="Bold"
+                                   Foreground="#4B5563"/>
+                    </Border>
+
+                    <!-- Online contacts list -->
+                    <ListBox Grid.Row="5"
                              ItemsSource="{Binding OnlineUsers}"
                              SelectedItem="{Binding SelectedPeer}"
                              Background="Transparent"
@@ -337,18 +453,62 @@
             <!-- ── CHAT AREA ─────────────────────────────────────────────── -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>  <!-- notification bar -->
                     <RowDefinition Height="Auto"/>  <!-- header -->
                     <RowDefinition Height="*"/>     <!-- messages -->
                     <RowDefinition Height="Auto"/>  <!-- typing indicator -->
                     <RowDefinition Height="Auto"/>  <!-- input bar -->
                 </Grid.RowDefinitions>
 
+                <!-- ── In-app notification bar ─────────────────────────────── -->
+                <Border Grid.Row="0"
+                        Background="#1D4ED8"
+                        Padding="16,10"
+                        Visibility="{Binding HasNotification,
+                            Converter={conv:BoolToVisibilityConverter}}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding NotificationText}"
+                                   Foreground="White" FontSize="13"
+                                   VerticalAlignment="Center"
+                                   TextWrapping="Wrap"/>
+                        <Button Grid.Column="1"
+                                Command="{Binding DismissNotificationCommand}"
+                                Content="✕"
+                                Foreground="White" Background="Transparent"
+                                BorderThickness="0" Cursor="Hand"
+                                FontSize="14" Padding="8,0" VerticalAlignment="Center">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                        <ContentPresenter/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Opacity" Value="0.7"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+                    </Grid>
+                </Border>
+
                 <!-- Chat header -->
-                <Border Grid.Row="0" Background="White" Padding="20,14"
+                <Border Grid.Row="1" Background="White" Padding="20,14"
                         BorderBrush="#E5E7EB" BorderThickness="0,0,0,1">
                     <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
                         <!-- Peer selected -->
-                        <StackPanel>
+                        <StackPanel Grid.Column="0">
                             <StackPanel.Style>
                                 <Style TargetType="StackPanel">
                                     <Setter Property="Visibility" Value="Collapsed"/>
@@ -383,8 +543,38 @@
                             </StackPanel>
                         </StackPanel>
 
+                        <!-- Block button (only shown when a peer is selected) -->
+                        <Button Grid.Column="1"
+                                Command="{Binding BlockContactCommand}"
+                                CommandParameter="{Binding SelectedPeer.UserName}"
+                                Content="🚫 Block"
+                                Visibility="{Binding HasSelectedPeer,
+                                    Converter={conv:BoolToVisibilityConverter}}"
+                                Foreground="#EF4444" Background="Transparent"
+                                BorderThickness="0" Cursor="Hand"
+                                FontSize="12" Padding="10,6"
+                                VerticalAlignment="Center">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border Background="{TemplateBinding Background}"
+                                            CornerRadius="6"
+                                            Padding="{TemplateBinding Padding}"
+                                            BorderBrush="#FCA5A5" BorderThickness="1">
+                                        <ContentPresenter HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Background" Value="#FEF2F2"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
+                        </Button>
+
                         <!-- No peer selected -->
-                        <TextBlock Text="Select a contact to start chatting"
+                        <TextBlock Grid.Column="0"
+                                   Text="Select a contact to start chatting"
                                    FontSize="15" Foreground="#9CA3AF" VerticalAlignment="Center">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
@@ -401,7 +591,7 @@
                 </Border>
 
                 <!-- Messages list -->
-                <ScrollViewer Grid.Row="1"
+                <ScrollViewer Grid.Row="2"
                               x:Name="MessagesScroller"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"
@@ -481,7 +671,7 @@
                 </ScrollViewer>
 
                 <!-- Typing indicator row -->
-                <Border Grid.Row="2" Padding="20,4"
+                <Border Grid.Row="3" Padding="20,4"
                         Background="{StaticResource ContentBgBrush}">
                     <Border.Style>
                         <Style TargetType="Border">
@@ -501,7 +691,7 @@
                 </Border>
 
                 <!-- Message input bar -->
-                <Border Grid.Row="3" Background="White"
+                <Border Grid.Row="4" Background="White"
                         BorderBrush="#E5E7EB" BorderThickness="0,1,0,0"
                         Padding="16,12">
                     <Grid>

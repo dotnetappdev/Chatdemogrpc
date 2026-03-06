@@ -10,28 +10,38 @@ namespace ChatApp.Core.Services;
 /// </summary>
 public sealed class PeerChatService : ChatService.ChatServiceBase
 {
-    private readonly IKnownPeersStore _knownPeers;
+    private readonly IKnownPeersStore  _knownPeers;
+    private readonly IContactService   _contacts;
     private readonly List<IServerStreamWriter<ChatMessageProto>> _subscribers = [];
     private readonly object _lock = new();
 
     public event EventHandler<ChatMessageProto>?                 MessageReceived;
     public event EventHandler<(string FromUser, bool IsTyping)>? TypingIndicatorReceived;
 
-    public PeerChatService(IKnownPeersStore knownPeers) => _knownPeers = knownPeers;
+    public PeerChatService(IKnownPeersStore knownPeers, IContactService contacts)
+    {
+        _knownPeers = knownPeers;
+        _contacts   = contacts;
+    }
 
     // ── Unary: receive a message ──────────────────────────────────────────
 
-    public override Task<SendMessageResponse> SendMessage(
+    public override async Task<SendMessageResponse> SendMessage(
         SendMessageRequest request, ServerCallContext context)
     {
         var msg = request.Message;
         if (msg is null)
-            return Task.FromResult(new SendMessageResponse { Success = false, Error = "Empty message" });
+            return new SendMessageResponse { Success = false, Error = "Empty message" };
+
+        // Silently discard messages from blocked users (shadow-block: sender
+        // gets Success=true so they don't know they are blocked).
+        if (await _contacts.IsBlockedAsync(msg.FromUser))
+            return new SendMessageResponse { Success = true, MessageId = msg.Id };
 
         PushToSubscribers(msg);
         MessageReceived?.Invoke(this, msg);
 
-        return Task.FromResult(new SendMessageResponse { Success = true, MessageId = msg.Id });
+        return new SendMessageResponse { Success = true, MessageId = msg.Id };
     }
 
     // ── Server-streaming: push messages to a connected subscriber ─────────
@@ -71,20 +81,19 @@ public sealed class PeerChatService : ChatService.ChatServiceBase
     public override async Task<GetKnownPeersResponse> GetKnownPeers(
         GetKnownPeersRequest request, ServerCallContext context)
     {
-        var all   = await _knownPeers.GetAllAsync();
+        var all      = await _knownPeers.GetAllAsync();
         var response = new GetKnownPeersResponse();
 
         foreach (var p in all)
         {
-            // Don't return the requesting peer back to themselves
             if (p.UserName == request.RequestingUser) continue;
 
             response.Peers.Add(new PeerInfo
             {
-                UserName       = p.UserName,
-                DisplayName    = p.DisplayName,
-                IpAddress      = p.IpAddress,
-                GrpcPort       = p.GrpcPort,
+                UserName        = p.UserName,
+                DisplayName     = p.DisplayName,
+                IpAddress       = p.IpAddress,
+                GrpcPort        = p.GrpcPort,
                 LastSeenUnixUtc = new DateTimeOffset(p.LastSeenUtc).ToUnixTimeSeconds()
             });
         }
