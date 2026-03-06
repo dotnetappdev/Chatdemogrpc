@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Net.Http.Json;
 using ChatApp.Shared.Models;
 
 namespace ChatApp.Client.Services;

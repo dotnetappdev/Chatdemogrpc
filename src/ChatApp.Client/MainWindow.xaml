@@ -5,8 +5,9 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="clr-namespace:ChatApp.Client.ViewModels"
         xmlns:models="clr-namespace:ChatApp.Client.Models"
+        xmlns:conv="clr-namespace:ChatApp.Client.Converters"
         mc:Ignorable="d"
-        Title="gRPC Chat Demo"
+        Title="⚡ gRPC Chat Demo"
         Height="720" Width="1100"
         MinHeight="600" MinWidth="850"
         WindowStartupLocation="CenterScreen"
@@ -16,56 +17,71 @@
         <vm:MainViewModel/>
     </Window.DataContext>
 
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis"/>
+        <conv:BoolToVisibilityConverter x:Key="InverseBoolToVis" />
+        <conv:ZeroToCollapsedConverter  x:Key="ZeroToCollapsed"/>
+    </Window.Resources>
+
     <Grid>
-        <!-- ══ LOGIN PANEL (shown when not logged in) ════════════════════ -->
+
+        <!-- ══ LOGIN PANEL ══════════════════════════════════════════════ -->
         <Border Visibility="{Binding IsLoggedIn,
-                    Converter={x:Static local:BoolToVisibilityConverter.InverseInstance}}"
+                    Converter={conv:BoolToVisibilityConverter},
+                    ConverterParameter=inverse}"
                 Background="White"
                 CornerRadius="12"
                 Padding="40"
-                MaxWidth="440" MaxHeight="500"
+                MaxWidth="460" MaxHeight="560"
                 HorizontalAlignment="Center" VerticalAlignment="Center">
             <Border.Effect>
                 <DropShadowEffect Color="#000000" Opacity="0.12" BlurRadius="24" ShadowDepth="4"/>
             </Border.Effect>
             <StackPanel>
-                <!-- Logo/Title -->
+
+                <!-- Title -->
                 <TextBlock Text="⚡ gRPC Chat"
                            FontSize="28" FontWeight="Bold"
                            Foreground="{StaticResource AccentBrush}"
                            HorizontalAlignment="Center" Margin="0,0,0,4"/>
-                <TextBlock Text="Peer-to-peer messaging powered by gRPC"
-                           FontSize="13" Foreground="#6B7280"
+                <TextBlock Text="P2P messaging · auto-discovery · no server needed"
+                           FontSize="12" Foreground="#6B7280"
                            HorizontalAlignment="Center" Margin="0,0,0,28"/>
 
                 <!-- Username -->
                 <TextBlock Text="Username" FontSize="12" Foreground="#374151"
                            Margin="0,0,0,4" FontWeight="SemiBold"/>
-                <TextBox Style="{StaticResource ModernTextBox}"
+                <TextBox x:Name="UsernameBox"
+                         Style="{StaticResource ModernTextBox}"
                          Text="{Binding LoginUserName, UpdateSourceTrigger=PropertyChanged}"
                          Margin="0,0,0,14"/>
 
                 <!-- Display Name -->
-                <TextBlock Text="Display Name (optional)" FontSize="12" Foreground="#374151"
+                <TextBlock Text="Display name (optional)" FontSize="12" Foreground="#374151"
                            Margin="0,0,0,4" FontWeight="SemiBold"/>
                 <TextBox Style="{StaticResource ModernTextBox}"
                          Text="{Binding LoginDisplayName, UpdateSourceTrigger=PropertyChanged}"
                          Margin="0,0,0,14"/>
 
-                <!-- API URL -->
-                <TextBlock Text="API URL" FontSize="12" Foreground="#374151"
-                           Margin="0,0,0,4" FontWeight="SemiBold"/>
+                <!-- API URL (optional) -->
+                <TextBlock FontSize="12" Foreground="#374151" Margin="0,0,0,4" FontWeight="SemiBold">
+                    REST API URL <Run Foreground="#9CA3AF">(optional — leave blank for pure P2P)</Run>
+                </TextBlock>
                 <TextBox Style="{StaticResource ModernTextBox}"
                          Text="{Binding ApiUrl, UpdateSourceTrigger=PropertyChanged}"
-                         Margin="0,0,0,24"/>
+                         Margin="0,0,0,6"/>
+                <TextBlock Text="e.g. http://192.168.1.10:5000  |  Start ChatApp.WebApi on any PC."
+                           FontSize="10" Foreground="#9CA3AF" Margin="2,0,0,20"
+                           TextWrapping="Wrap"/>
 
-                <!-- Login Button -->
+                <!-- Connect button -->
                 <Button Style="{StaticResource PrimaryButton}"
                         Command="{Binding LoginCommand}"
+                        IsEnabled="{Binding IsBusy, Converter={conv:BoolToVisibilityConverter}, ConverterParameter=neg}"
                         Content="Connect"
-                        Height="44" FontSize="15"
-                        IsEnabled="{Binding IsBusy, Converter={x:Static local:BoolToVisibilityConverter.NegInstance}}"/>
+                        Height="44" FontSize="15"/>
 
+                <!-- Status -->
                 <TextBlock Text="{Binding StatusText}"
                            FontSize="12" Foreground="#6B7280"
                            HorizontalAlignment="Center" Margin="0,12,0,0"
@@ -73,87 +89,140 @@
             </StackPanel>
         </Border>
 
-        <!-- ══ MAIN CHAT LAYOUT (shown when logged in) ═══════════════════ -->
-        <Grid Visibility="{Binding IsLoggedIn,
-                    Converter={x:Static local:BoolToVisibilityConverter.Instance}}">
+        <!-- ══ MAIN CHAT LAYOUT ══════════════════════════════════════════ -->
+        <Grid>
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsLoggedIn}" Value="True">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="280"/>
+                <ColumnDefinition Width="290"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
             <!-- ── SIDEBAR ──────────────────────────────────────────────── -->
             <Grid Grid.Column="0" Background="{StaticResource SidebarBgBrush}">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>  <!-- header -->
+                    <RowDefinition Height="Auto"/>  <!-- add peer -->
+                    <RowDefinition Height="*"/>     <!-- contacts -->
+                    <RowDefinition Height="Auto"/>  <!-- port info -->
+                    <RowDefinition Height="Auto"/>  <!-- disconnect -->
                 </Grid.RowDefinitions>
 
-                <!-- User info header -->
+                <!-- User header -->
                 <Border Grid.Row="0" Background="{StaticResource HeaderBgBrush}" Padding="16,14">
                     <StackPanel>
                         <TextBlock Text="⚡ gRPC Chat" FontSize="16" FontWeight="Bold"
                                    Foreground="White" Margin="0,0,0,6"/>
-                        <StackPanel Orientation="Horizontal">
-                            <Ellipse Width="10" Height="10" Fill="#22C55E" Margin="0,0,6,0"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <Ellipse Width="9" Height="9" Fill="#22C55E" Margin="0,0,6,0"
+                                     VerticalAlignment="Center"/>
                             <TextBlock Text="{Binding CurrentDisplayName}"
                                        FontSize="13" Foreground="#E2E8F0" FontWeight="SemiBold"/>
                         </StackPanel>
-                        <TextBlock Text="{Binding StatusText}" FontSize="10"
-                                   Foreground="#94A3B8" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                        <!-- API badge -->
+                        <Border CornerRadius="4" Padding="6,2" HorizontalAlignment="Left"
+                                Visibility="{Binding ApiConnected,
+                                    Converter={conv:BoolToVisibilityConverter}}">
+                            <Border.Background>
+                                <SolidColorBrush Color="#166534"/>
+                            </Border.Background>
+                            <TextBlock Text="🌐 API connected" FontSize="10" Foreground="#BBF7D0"/>
+                        </Border>
+                        <Border CornerRadius="4" Padding="6,2" HorizontalAlignment="Left"
+                                Visibility="{Binding ApiConnected,
+                                    Converter={conv:BoolToVisibilityConverter},
+                                    ConverterParameter=inverse}">
+                            <Border.Background>
+                                <SolidColorBrush Color="#2D2D3F"/>
+                            </Border.Background>
+                            <TextBlock Text="📡 P2P / local mode" FontSize="10" Foreground="#94A3B8"/>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <!-- Section: Add peer manually -->
-                <Expander Grid.Row="1" Header="Add Peer Manually"
-                          Foreground="#94A3B8" Margin="8,8,8,0"
-                          Background="Transparent">
-                    <StackPanel Margin="4,8,4,4">
+                <!-- Add peer manually (for cross-subnet / VPN) -->
+                <Expander Grid.Row="1"
+                          Header="+ Add peer by IP"
+                          Foreground="#94A3B8"
+                          BorderThickness="0"
+                          Margin="8,6,8,0">
+                    <Expander.Template>
+                        <ControlTemplate TargetType="Expander">
+                            <StackPanel>
+                                <ToggleButton x:Name="ExpanderButton"
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}"
+                                              Content="{TemplateBinding Header}"
+                                              Foreground="#94A3B8"
+                                              Background="Transparent"
+                                              BorderThickness="0"
+                                              Cursor="Hand"
+                                              HorizontalContentAlignment="Left"
+                                              Padding="4,6">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Border Background="Transparent" Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter/>
+                                            </Border>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                                <ContentPresenter Visibility="{Binding IsExpanded,
+                                    RelativeSource={RelativeSource TemplatedParent},
+                                    Converter={conv:BoolToVisibilityConverter}}"/>
+                            </StackPanel>
+                        </ControlTemplate>
+                    </Expander.Template>
+                    <StackPanel Margin="4,4,4,8">
                         <TextBox Style="{StaticResource ModernTextBox}"
                                  Text="{Binding PeerIpInput, UpdateSourceTrigger=PropertyChanged}"
-                                 Background="#2D2D3F" Foreground="White"
-                                 BorderBrush="#3D3D5C"
+                                 Background="#2D2D3F" Foreground="White" BorderBrush="#3D3D5C"
                                  Margin="0,0,0,6">
                             <TextBox.Resources>
-                                <Style TargetType="TextBox" BasedOn="{StaticResource ModernTextBox}">
-                                    <Setter Property="Foreground" Value="White"/>
-                                    <Setter Property="Background" Value="#2D2D3F"/>
-                                </Style>
+                                <VisualBrush x:Key="HintBrush" AlignmentX="Left" AlignmentY="Center" Stretch="None">
+                                    <VisualBrush.Visual>
+                                        <TextBlock Text="IP address" Foreground="#64748B" Margin="10,0"/>
+                                    </VisualBrush.Visual>
+                                </VisualBrush>
                             </TextBox.Resources>
                         </TextBox>
                         <TextBox Style="{StaticResource ModernTextBox}"
                                  Text="{Binding PeerPortInput, UpdateSourceTrigger=PropertyChanged}"
-                                 Background="#2D2D3F" Foreground="White"
-                                 BorderBrush="#3D3D5C"
+                                 Background="#2D2D3F" Foreground="White" BorderBrush="#3D3D5C"
                                  Margin="0,0,0,6"/>
                         <Button Style="{StaticResource PrimaryButton}"
                                 Command="{Binding AddPeerManuallyCommand}"
-                                Content="Connect to Peer" Padding="8,6"/>
+                                Content="Connect" Padding="8,6" FontSize="12"/>
                     </StackPanel>
                 </Expander>
 
-                <!-- Online users list -->
+                <!-- Contacts header + refresh -->
                 <Grid Grid.Row="2">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0" Padding="16,10,16,6">
+                    <Border Grid.Row="0" Padding="16,8,16,4">
                         <Grid>
-                            <TextBlock Text="CONTACTS" FontSize="11" FontWeight="Bold"
-                                       Foreground="#64748B" VerticalAlignment="Center"/>
-                            <Button HorizontalAlignment="Right"
-                                    Command="{Binding RefreshUsersManuallyCommand}"
-                                    Background="Transparent" BorderThickness="0"
-                                    Foreground="#64748B" Cursor="Hand"
-                                    Content="↻" FontSize="16" Padding="4,0"
-                                    ToolTip="Refresh online users"/>
+                            <TextBlock Text="CONTACTS" FontSize="10" FontWeight="Bold"
+                                       Foreground="#4B5563" VerticalAlignment="Center"/>
+                            <TextBlock HorizontalAlignment="Right"
+                                       FontSize="11" Foreground="#4B5563"
+                                       VerticalAlignment="Center">
+                                <Run Text="Auto-discovery on" Foreground="#22C55E"/>
+                            </TextBlock>
                         </Grid>
                     </Border>
 
+                    <!-- Contacts list -->
                     <ListBox Grid.Row="1"
                              ItemsSource="{Binding OnlineUsers}"
                              SelectedItem="{Binding SelectedPeer}"
@@ -162,11 +231,13 @@
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
-                                <Setter Property="Padding"          Value="12,10"/>
-                                <Setter Property="Background"       Value="Transparent"/>
-                                <Setter Property="BorderThickness"  Value="0"/>
-                                <Setter Property="Cursor"           Value="Hand"/>
+                                <Setter Property="Padding"                    Value="12,10"/>
+                                <Setter Property="Background"                 Value="Transparent"/>
+                                <Setter Property="BorderThickness"            Value="0"/>
+                                <Setter Property="Cursor"                     Value="Hand"/>
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <EventSetter Event="MouseLeftButtonUp"
+                                             Handler="ContactItem_Click"/>
                                 <Style.Triggers>
                                     <Trigger Property="IsMouseOver" Value="True">
                                         <Setter Property="Background" Value="#2D2D3F"/>
@@ -186,9 +257,8 @@
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <!-- Avatar circle -->
-                                    <Border Grid.Column="0"
-                                            Width="38" Height="38"
+                                    <!-- Avatar -->
+                                    <Border Grid.Column="0" Width="38" Height="38"
                                             CornerRadius="19"
                                             Background="{StaticResource AccentBrush}"
                                             Margin="0,0,10,0">
@@ -199,7 +269,7 @@
                                                    VerticalAlignment="Center"/>
                                     </Border>
 
-                                    <!-- Name + status -->
+                                    <!-- Name + endpoint -->
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="{Binding DisplayName}"
                                                    FontSize="13" FontWeight="SemiBold"
@@ -219,7 +289,7 @@
                                             Padding="6,2"
                                             VerticalAlignment="Center"
                                             Visibility="{Binding UnreadCount,
-                                                Converter={x:Static local:ZeroToCollapsedConverter.Instance}}">
+                                                Converter={conv:ZeroToCollapsedConverter}}">
                                         <TextBlock Text="{Binding UnreadCount}"
                                                    FontSize="11" FontWeight="Bold"
                                                    Foreground="White"/>
@@ -230,31 +300,33 @@
                     </ListBox>
                 </Grid>
 
-                <!-- Local port info -->
-                <Border Grid.Row="3" Padding="14,8" Background="#1A1A2E">
+                <!-- Port info -->
+                <Border Grid.Row="3" Padding="14,6" Background="#1A1A2E">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="gRPC Port: " FontSize="11" Foreground="#64748B"/>
+                        <TextBlock Text="My gRPC port: " FontSize="11" Foreground="#4B5563"/>
                         <TextBlock Text="{Binding LocalGrpcPort}"
-                                   FontSize="11" Foreground="#94A3B8" FontWeight="SemiBold"/>
+                                   FontSize="11" Foreground="#64748B" FontWeight="SemiBold"/>
+                        <TextBlock Text="  ·  UDP discovery: 45678"
+                                   FontSize="11" Foreground="#374151"/>
                     </StackPanel>
                 </Border>
 
-                <!-- Logout -->
+                <!-- Disconnect -->
                 <Button Grid.Row="4"
                         Command="{Binding LogoutCommand}"
                         Content="Disconnect"
-                        Margin="12,8" Height="34"
-                        Background="#374151" Foreground="White"
-                        BorderThickness="0" Cursor="Hand">
+                        Margin="12,6,12,10" Height="32"
+                        Foreground="#9CA3AF" FontSize="12"
+                        Background="Transparent" BorderThickness="0" Cursor="Hand">
                     <Button.Template>
                         <ControlTemplate TargetType="Button">
                             <Border Background="{TemplateBinding Background}"
-                                    CornerRadius="6" Padding="8,6">
+                                    CornerRadius="6" Padding="8,5">
                                 <ContentPresenter HorizontalAlignment="Center"/>
                             </Border>
                             <ControlTemplate.Triggers>
                                 <Trigger Property="IsMouseOver" Value="True">
-                                    <Setter Property="Background" Value="#4B5563"/>
+                                    <Setter Property="Background" Value="#374151"/>
                                 </Trigger>
                             </ControlTemplate.Triggers>
                         </ControlTemplate>
@@ -265,18 +337,28 @@
             <!-- ── CHAT AREA ─────────────────────────────────────────────── -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>  <!-- header -->
+                    <RowDefinition Height="*"/>     <!-- messages -->
+                    <RowDefinition Height="Auto"/>  <!-- typing indicator -->
+                    <RowDefinition Height="Auto"/>  <!-- input bar -->
                 </Grid.RowDefinitions>
 
                 <!-- Chat header -->
                 <Border Grid.Row="0" Background="White" Padding="20,14"
                         BorderBrush="#E5E7EB" BorderThickness="0,0,0,1">
                     <Grid>
-                        <StackPanel Visibility="{Binding HasSelectedPeer,
-                                        Converter={x:Static local:BoolToVisibilityConverter.Instance}}">
+                        <!-- Peer selected -->
+                        <StackPanel>
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasSelectedPeer}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
                             <TextBlock Text="{Binding SelectedPeer.DisplayName}"
                                        FontSize="16" FontWeight="Bold" Foreground="#111827"/>
                             <StackPanel Orientation="Horizontal">
@@ -284,37 +366,65 @@
                                            FontSize="12" Margin="0,0,6,0"/>
                                 <TextBlock Text="{Binding SelectedPeer.Endpoint}"
                                            FontSize="12" Foreground="#6B7280"/>
-                                <TextBlock Text=" · typing…"
-                                           FontSize="12" Foreground="{StaticResource AccentBrush}"
-                                           FontStyle="Italic"
-                                           Visibility="{Binding IsPeerTyping,
-                                               Converter={x:Static local:BoolToVisibilityConverter.Instance}}"/>
+                                <TextBlock FontSize="12" Foreground="{StaticResource AccentBrush}"
+                                           FontStyle="Italic" Margin="8,0,0,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsPeerTyping}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                    typing…
+                                </TextBlock>
                             </StackPanel>
                         </StackPanel>
-                        <TextBlock Visibility="{Binding HasSelectedPeer,
-                                       Converter={x:Static local:BoolToVisibilityConverter.InverseInstance}}"
-                                   Text="Select a contact to start chatting"
-                                   FontSize="15" Foreground="#9CA3AF"
-                                   VerticalAlignment="Center"/>
+
+                        <!-- No peer selected -->
+                        <TextBlock Text="Select a contact to start chatting"
+                                   FontSize="15" Foreground="#9CA3AF" VerticalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasSelectedPeer}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
                     </Grid>
                 </Border>
 
-                <!-- Messages area -->
+                <!-- Messages list -->
                 <ScrollViewer Grid.Row="1"
                               x:Name="MessagesScroller"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"
-                              Padding="16,12"
+                              Padding="16,10"
                               Background="{StaticResource ContentBgBrush}">
-                    <ItemsControl ItemsSource="{Binding Messages}">
+                    <ItemsControl x:Name="MessagesItemsControl"
+                                  ItemsSource="{Binding Messages}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate DataType="{x:Type models:ChatMessage}">
                                 <Grid Margin="0,0,0,8">
-                                    <!-- Mine = right-aligned blue bubble -->
-                                    <Border HorizontalAlignment="Right"
-                                            MaxWidth="460"
-                                            Visibility="{Binding IsMine,
-                                                Converter={x:Static local:BoolToVisibilityConverter.Instance}}">
+
+                                    <!-- My message — right-aligned blue bubble -->
+                                    <Border HorizontalAlignment="Right" MaxWidth="500">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsMine}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
                                         <StackPanel>
                                             <Border Background="{StaticResource ChatBubbleMineBrush}"
                                                     CornerRadius="14,2,14,14"
@@ -327,15 +437,22 @@
                                             <TextBlock Text="{Binding TimeDisplay}"
                                                        FontSize="10" Foreground="#9CA3AF"
                                                        HorizontalAlignment="Right"
-                                                       Margin="0,2,4,0"/>
+                                                       Margin="0,3,4,0"/>
                                         </StackPanel>
                                     </Border>
 
-                                    <!-- Theirs = left-aligned white bubble -->
-                                    <Border HorizontalAlignment="Left"
-                                            MaxWidth="460"
-                                            Visibility="{Binding IsMine,
-                                                Converter={x:Static local:BoolToVisibilityConverter.InverseInstance}}">
+                                    <!-- Their message — left-aligned white bubble -->
+                                    <Border HorizontalAlignment="Left" MaxWidth="500">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsMine}" Value="True">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
                                         <StackPanel>
                                             <TextBlock Text="{Binding FromUser}"
                                                        FontSize="10" Foreground="#6B7280"
@@ -354,7 +471,7 @@
                                             </Border>
                                             <TextBlock Text="{Binding TimeDisplay}"
                                                        FontSize="10" Foreground="#9CA3AF"
-                                                       Margin="4,2,0,0"/>
+                                                       Margin="4,3,0,0"/>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
@@ -363,10 +480,19 @@
                     </ItemsControl>
                 </ScrollViewer>
 
-                <!-- Typing indicator -->
+                <!-- Typing indicator row -->
                 <Border Grid.Row="2" Padding="20,4"
-                        Visibility="{Binding IsPeerTyping,
-                            Converter={x:Static local:BoolToVisibilityConverter.Instance}}">
+                        Background="{StaticResource ContentBgBrush}">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsPeerTyping}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
                     <TextBlock FontSize="12" FontStyle="Italic"
                                Foreground="{StaticResource AccentBrush}">
                         <Run Text="{Binding SelectedPeer.DisplayName, Mode=OneWay}"/>
@@ -385,13 +511,13 @@
                         </Grid.ColumnDefinitions>
 
                         <TextBox Grid.Column="0"
+                                 x:Name="MessageInputBox"
                                  Style="{StaticResource ModernTextBox}"
                                  Text="{Binding MessageInput, UpdateSourceTrigger=PropertyChanged}"
                                  IsEnabled="{Binding HasSelectedPeer}"
-                                 AcceptsReturn="False"
+                                 KeyDown="MessageInput_KeyDown"
                                  Margin="0,0,10,0"
-                                 local:TextBoxHelper.EnterCommand="{Binding SendMessageCommand}">
-                        </TextBox>
+                                 VerticalContentAlignment="Center"/>
 
                         <Button Grid.Column="1"
                                 Style="{StaticResource PrimaryButton}"
