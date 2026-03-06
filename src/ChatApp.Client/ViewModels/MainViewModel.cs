@@ -1,5 +1,7 @@
-using ChatApp.Client.Models;
-using ChatApp.Client.Services;
+using ChatApp.Core;
+using ChatApp.Core.Interfaces;
+using ChatApp.Core.Models;
+using ChatApp.Core.Services;
 using ChatApp.Shared.Grpc;
 using ChatApp.Shared.Models;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -11,114 +13,109 @@ using System.Windows;
 
 namespace ChatApp.Client.ViewModels;
 
+/// <summary>
+/// Thin coordinator — delegates all business logic to ChatApp.Core services.
+/// Owns UI state only.
+/// </summary>
 public partial class MainViewModel : ObservableObject
 {
-    // ─── Services ────────────────────────────────────────────────────────
+    // ── Core services (injected / created at login) ───────────────────────
+    private readonly LocalDb              _db;
+    private readonly IHistoryService      _history;
+    private readonly IKnownPeersStore     _peerStore;
+    private readonly IDiscoveryService    _discovery;
+    private readonly IPeerNetworkService  _network;
+    private readonly GrpcHostService      _grpcHost;
+    private          ApiService?          _api;
 
-    private readonly GrpcHostService     _grpcHost        = new();
-    private readonly PeerClientService   _peerClient      = new();
-    private readonly UdpDiscoveryService _discovery       = new();
-    private readonly LocalHistoryService _localHistory    = new();
-    private ApiService?                  _api;              // optional REST API
-
-    private CancellationTokenSource _cts = new();
-
-    // ─── Observable State ────────────────────────────────────────────────
+    // ── Observable state ─────────────────────────────────────────────────
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsLoggedIn))]
     private string _currentUserName = string.Empty;
 
-    [ObservableProperty]
-    private string _currentDisplayName = string.Empty;
+    [ObservableProperty] private string _currentDisplayName = string.Empty;
+    [ObservableProperty] private string _loginUserName      = string.Empty;
+    [ObservableProperty] private string _loginDisplayName   = string.Empty;
 
-    [ObservableProperty]
-    private string _loginUserName = string.Empty;
-
-    [ObservableProperty]
-    private string _loginDisplayName = string.Empty;
-
-    /// <summary>
-    /// Optional REST API base URL.  Leave blank to run in full P2P / local mode.
-    /// </summary>
-    [ObservableProperty]
-    private string _apiUrl = string.Empty;
+    /// <summary>Optional REST API URL. Blank = pure P2P / local mode.</summary>
+    [ObservableProperty] private string _apiUrl = string.Empty;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelectedPeer))]
     private PeerUser? _selectedPeer;
 
-    [ObservableProperty]
-    private string _messageInput = string.Empty;
+    [ObservableProperty] private string _messageInput  = string.Empty;
+    [ObservableProperty] private string _statusText    = "Not connected";
+    [ObservableProperty] private bool   _isBusy;
+    [ObservableProperty] private string _peerIpInput   = string.Empty;
+    [ObservableProperty] private string _peerPortInput = string.Empty;
+    [ObservableProperty] private int    _localGrpcPort;
+    [ObservableProperty] private bool   _isPeerTyping;
+    [ObservableProperty] private bool   _apiConnected;
 
     [ObservableProperty]
-    private string _statusText = "Not connected";
+    [NotifyPropertyChangedFor(nameof(NetworkSummary))]
+    private int _knownPeerCount;
 
-    [ObservableProperty]
-    private bool _isBusy;
-
-    [ObservableProperty]
-    private string _peerIpInput = string.Empty;
-
-    [ObservableProperty]
-    private string _peerPortInput = string.Empty;
-
-    [ObservableProperty]
-    private int _localGrpcPort;
-
-    [ObservableProperty]
-    private bool _isPeerTyping;
-
-    [ObservableProperty]
-    private bool _apiConnected;
-
-    public bool IsLoggedIn     => !string.IsNullOrEmpty(CurrentUserName);
+    public bool IsLoggedIn      => !string.IsNullOrEmpty(CurrentUserName);
     public bool HasSelectedPeer => SelectedPeer is not null;
+    public string NetworkSummary =>
+        $"{OnlineUsers.Count} online  ·  {KnownPeerCount} ever seen";
 
     public ObservableCollection<PeerUser>    OnlineUsers { get; } = [];
     public ObservableCollection<ChatMessage> Messages    { get; } = [];
 
-    // ─── Constructor ─────────────────────────────────────────────────────
+    // ── Constructor ──────────────────────────────────────────────────────
 
     public MainViewModel()
     {
-        _grpcHost.ChatService.MessageReceived         += OnGrpcMessageReceived;
-        _grpcHost.ChatService.TypingIndicatorReceived += OnTypingIndicatorReceived;
-        _discovery.PeerDiscovered                     += OnPeerDiscovered;
-        _discovery.PeerLeft                           += OnPeerLeft;
+        _db        = LocalDb.CreateForProduction();
+        _peerStore = new KnownPeersStore(_db);
+        _history   = new HistoryService(_db);
+
+        var channelFactory = new GrpcPeerChannelFactory();
+        _network           = new PeerNetworkService(channelFactory, _peerStore);
+        _discovery         = new UdpDiscoveryService();
+
+        var chatSvc = new PeerChatService(_peerStore);
+        _grpcHost   = new GrpcHostService(chatSvc);
+
+        chatSvc.MessageReceived         += OnGrpcMessageReceived;
+        chatSvc.TypingIndicatorReceived += OnTypingIndicatorReceived;
+        _network.PeerConnected          += OnPeerConnected;
+        _discovery.PeerDiscovered       += OnPeerDiscovered;
+        _discovery.PeerLeft             += OnPeerLeft;
     }
 
-    // ─── Commands ────────────────────────────────────────────────────────
+    // ── Commands ─────────────────────────────────────────────────────────
 
     [RelayCommand]
     private async Task LoginAsync()
     {
         if (string.IsNullOrWhiteSpace(LoginUserName)) return;
-
-        IsBusy     = true;
-        StatusText = "Starting…";
+        IsBusy = true; StatusText = "Starting…";
 
         try
         {
-            // Pick a free port for our embedded gRPC server
             LocalGrpcPort = FindFreePort();
-
-            // Start embedded gRPC server (peers connect to us)
-            await _grpcHost.StartAsync(LocalGrpcPort);
 
             CurrentUserName    = LoginUserName.Trim();
             CurrentDisplayName = string.IsNullOrWhiteSpace(LoginDisplayName)
-                ? CurrentUserName
-                : LoginDisplayName.Trim();
+                ? CurrentUserName : LoginDisplayName.Trim();
 
             LocalUserContext.CurrentUserName    = CurrentUserName;
             LocalUserContext.CurrentDisplayName = CurrentDisplayName;
 
-            // ── Optional REST API ───────────────────────────────────────
+            ((PeerNetworkService)_network).LocalUserName = CurrentUserName;
+
+            // Start embedded gRPC server — this node is now reachable by peers
+            await _grpcHost.StartAsync(LocalGrpcPort);
+
+            // ── Optional REST API ─────────────────────────────────────────
             if (!string.IsNullOrWhiteSpace(ApiUrl))
             {
                 _api = new ApiService(ApiUrl.Trim());
-
                 var reg = new RegisterUserRequest
                 {
                     UserName    = CurrentUserName,
@@ -126,47 +123,39 @@ public partial class MainViewModel : ObservableObject
                     IpAddress   = GetLocalIpAddress(),
                     GrpcPort    = LocalGrpcPort
                 };
-
                 var user = await _api.RegisterAsync(reg);
                 ApiConnected = user is not null;
-
-                if (!ApiConnected)
-                    StatusText = $"⚠ API not reachable — running in P2P/local mode";
             }
 
-            // ── UDP peer discovery (always on) ──────────────────────────
+            // ── Bootstrap: reconnect to every previously-known peer ───────
+            var saved = await _peerStore.GetAllAsync();
+            KnownPeerCount = saved.Count;
+            foreach (var p in saved)
+                _ = Task.Run(() => _network.ConnectAndExchangeAsync(p.IpAddress, p.GrpcPort));
+
+            // ── LAN broadcast discovery ──────────────────────────────────
             await _discovery.StartAsync(CurrentUserName, CurrentDisplayName, LocalGrpcPort);
 
             StatusText = ApiConnected
-                ? $"Online as {CurrentDisplayName} | gRPC :{LocalGrpcPort} | API connected"
-                : $"Online as {CurrentDisplayName} | gRPC :{LocalGrpcPort} | P2P mode";
+                ? $"🌐 {CurrentDisplayName} | gRPC :{LocalGrpcPort} | API connected"
+                : $"📡 {CurrentDisplayName} | gRPC :{LocalGrpcPort} | P2P mesh";
         }
-        catch (Exception ex)
-        {
-            StatusText = $"Error: {ex.Message}";
-        }
-        finally
-        {
-            IsBusy = false;
-        }
+        catch (Exception ex) { StatusText = $"Error: {ex.Message}"; }
+        finally { IsBusy = false; }
     }
 
     [RelayCommand]
     public async Task LogoutAsync()
     {
-        _cts.Cancel();
-
         await _discovery.StopAsync();
         await _grpcHost.StopAsync();
 
         if (_api is not null && ApiConnected)
             await _api.UnregisterAsync(CurrentUserName);
-
         _api?.Dispose();
         _api = null;
 
-        CurrentUserName    = string.Empty;
-        CurrentDisplayName = string.Empty;
+        CurrentUserName = string.Empty;
         LocalUserContext.CurrentUserName    = string.Empty;
         LocalUserContext.CurrentDisplayName = string.Empty;
 
@@ -182,8 +171,8 @@ public partial class MainViewModel : ObservableObject
     {
         if (SelectedPeer is null || string.IsNullOrWhiteSpace(MessageInput)) return;
 
-        var content      = MessageInput.Trim();
-        MessageInput     = string.Empty;
+        var content   = MessageInput.Trim();
+        MessageInput  = string.Empty;
 
         var proto = new ChatMessageProto
         {
@@ -195,132 +184,87 @@ public partial class MainViewModel : ObservableObject
             Type      = MessageType.Text
         };
 
-        // Show immediately in the UI (optimistic)
-        AddMessageToUi(proto.Id, proto.FromUser, proto.ToUser, content,
-            DateTime.Now, isMine: true);
+        // Optimistic UI update
+        AddMessageToUi(proto.Id, CurrentUserName, SelectedPeer.UserName,
+            content, DateTime.Now, isMine: true);
 
-        // Fire-and-forget: send via gRPC, persist locally, and optionally to API
         _ = Task.Run(async () =>
         {
-            // 1. Deliver via gRPC P2P
-            var sent = await _peerClient.SendMessageAsync(
-                SelectedPeer.IpAddress, SelectedPeer.GrpcPort, proto);
+            var sent = await _network.SendMessageAsync(SelectedPeer, proto);
 
             if (!sent)
-            {
                 Application.Current.Dispatcher.Invoke(() =>
                     StatusText = $"⚠ Could not reach {SelectedPeer.DisplayName}");
-            }
 
-            // 2. Persist locally (always)
-            await _localHistory.SaveAsync(CurrentUserName, SelectedPeer.UserName, content);
+            await _history.SaveAsync(CurrentUserName, SelectedPeer.UserName, content);
 
-            // 3. Persist to REST API (optional)
             if (_api is not null && ApiConnected)
-            {
                 await _api.SaveMessageAsync(new SaveMessageRequest
-                {
-                    FromUser = CurrentUserName,
-                    ToUser   = SelectedPeer.UserName,
-                    Content  = content
-                });
-            }
+                    { FromUser = CurrentUserName, ToUser = SelectedPeer.UserName, Content = content });
         });
     }
 
     [RelayCommand]
     private async Task SelectPeerAsync(PeerUser peer)
     {
-        SelectedPeer  = peer;
-        IsPeerTyping  = false;
+        SelectedPeer = peer;
+        IsPeerTyping = false;
         Messages.Clear();
 
-        // Load history — prefer local SQLite, fall back to API if needed
-        var local = await _localHistory.GetConversationAsync(CurrentUserName, peer.UserName);
+        var history = await _history.GetConversationAsync(
+            CurrentUserName, peer.UserName, localUser: CurrentUserName);
+
+        // Fall back to API history if local is empty
+        if (history.Count == 0 && _api is not null && ApiConnected)
+        {
+            var apiMsgs = await _api.GetConversationAsync(CurrentUserName, peer.UserName);
+            history = apiMsgs.Select(m => new ChatMessage(
+                m.Id.ToString(), m.FromUser, m.ToUser, m.Content, m.SentAt,
+                IsMine: m.FromUser == CurrentUserName)).ToList();
+        }
 
         Application.Current.Dispatcher.Invoke(() =>
         {
-            foreach (var m in local)
-            {
-                Messages.Add(new ChatMessage
-                {
-                    Id        = m.Id.ToString(),
-                    FromUser  = m.FromUser,
-                    ToUser    = m.ToUser,
-                    Content   = m.Content,
-                    Timestamp = m.SentAt,
-                    IsMine    = m.FromUser == CurrentUserName
-                });
-            }
+            foreach (var m in history) Messages.Add(m);
         });
 
-        // If API is connected and we have no local history, fetch from API
-        if (local.Count == 0 && _api is not null && ApiConnected)
-        {
-            var apiHistory = await _api.GetConversationAsync(CurrentUserName, peer.UserName);
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                Messages.Clear();
-                foreach (var m in apiHistory)
-                {
-                    Messages.Add(new ChatMessage
-                    {
-                        Id        = m.Id.ToString(),
-                        FromUser  = m.FromUser,
-                        ToUser    = m.ToUser,
-                        Content   = m.Content,
-                        Timestamp = m.SentAt,
-                        IsRead    = m.IsRead,
-                        IsMine    = m.FromUser == CurrentUserName
-                    });
-                }
-            });
-
+        if (_api is not null && ApiConnected)
             await _api.MarkAsReadAsync(CurrentUserName, peer.UserName);
-        }
 
         peer.UnreadCount = 0;
         StatusText = $"Chatting with {peer.DisplayName}";
     }
 
-    /// <summary>Manually add a peer by IP and gRPC port (for cross-subnet scenarios).</summary>
+    /// <summary>Manually add a peer by IP:Port — useful across subnets or VPNs.</summary>
     [RelayCommand]
     private async Task AddPeerManuallyAsync()
     {
-        if (string.IsNullOrWhiteSpace(PeerIpInput) || string.IsNullOrWhiteSpace(PeerPortInput))
-            return;
-
         if (!int.TryParse(PeerPortInput, out var port)) return;
+        if (string.IsNullOrWhiteSpace(PeerIpInput)) return;
 
-        StatusText = $"Pinging {PeerIpInput}:{port}…";
-        var ping = await _peerClient.PingAsync(PeerIpInput, port, CurrentUserName);
-        if (ping is null)
-        {
-            StatusText = $"⚠ Peer at {PeerIpInput}:{port} is not reachable";
-            return;
-        }
-
-        UpsertPeer(ping.UserName, ping.DisplayName, PeerIpInput, port);
-        StatusText    = $"✓ Connected to {ping.DisplayName}";
-        PeerIpInput   = string.Empty;
-        PeerPortInput = string.Empty;
+        StatusText = $"Connecting to {PeerIpInput}:{port}…";
+        await _network.ConnectAndExchangeAsync(PeerIpInput, port);
+        PeerIpInput = PeerPortInput = string.Empty;
     }
 
-    // ─── Discovery Event Handlers ─────────────────────────────────────────
+    // ── Event handlers from Core ─────────────────────────────────────────
 
-    private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
+    private void OnPeerConnected(object? sender, PeerUser peer)
     {
-        // Run a quick gRPC Ping to confirm the peer is actually reachable
-        // then add/update the contacts list
+        Application.Current.Dispatcher.Invoke(() => UpsertOnlineUser(peer));
         _ = Task.Run(async () =>
         {
-            var ping = await _peerClient.PingAsync(peer.IpAddress, peer.GrpcPort, CurrentUserName);
-            if (ping is null) return;
-
+            var all = await _peerStore.GetAllAsync();
             Application.Current.Dispatcher.Invoke(() =>
-                UpsertPeer(peer.UserName, peer.DisplayName, peer.IpAddress, peer.GrpcPort));
+            {
+                KnownPeerCount = all.Count;
+                OnPropertyChanged(nameof(NetworkSummary));
+            });
         });
     }
+
+    private void OnPeerDiscovered(object? sender, DiscoveredPeer peer)
+        => _ = Task.Run(() => _network.ConnectAndExchangeAsync(peer.IpAddress, peer.GrpcPort));
 
     private void OnPeerLeft(object? sender, string userName)
     {
@@ -332,105 +276,70 @@ public partial class MainViewModel : ObservableObject
                 existing.Status = UserStatus.Offline;
                 OnlineUsers.Remove(existing);
             }
-
             if (SelectedPeer?.UserName == userName)
                 StatusText = $"⚠ {userName} went offline";
         });
     }
-
-    // ─── gRPC Event Handlers ──────────────────────────────────────────────
 
     private void OnGrpcMessageReceived(object? sender, ChatMessageProto msg)
     {
         Application.Current.Dispatcher.Invoke(() =>
         {
             if (SelectedPeer?.UserName == msg.FromUser)
-            {
                 AddMessageToUi(msg.Id, msg.FromUser, msg.ToUser, msg.Content,
                     DateTime.TryParse(msg.Timestamp, out var ts) ? ts : DateTime.Now,
                     isMine: false);
-            }
             else
             {
-                // Increment unread badge for the sender
                 var peer = OnlineUsers.FirstOrDefault(u => u.UserName == msg.FromUser);
-                if (peer is not null)
-                    peer.UnreadCount++;
+                if (peer is not null) peer.UnreadCount++;
             }
         });
 
-        // Persist locally + to API
         _ = Task.Run(async () =>
         {
-            await _localHistory.SaveAsync(msg.FromUser, msg.ToUser, msg.Content);
-
+            await _history.SaveAsync(msg.FromUser, msg.ToUser, msg.Content);
             if (_api is not null && ApiConnected)
-            {
                 await _api.SaveMessageAsync(new SaveMessageRequest
-                {
-                    FromUser = msg.FromUser,
-                    ToUser   = msg.ToUser,
-                    Content  = msg.Content
-                });
-            }
+                    { FromUser = msg.FromUser, ToUser = msg.ToUser, Content = msg.Content });
         });
     }
 
-    private void OnTypingIndicatorReceived(object? sender, (string FromUser, bool IsTyping) args)
+    private void OnTypingIndicatorReceived(object? sender, (string FromUser, bool IsTyping) e)
     {
         Application.Current.Dispatcher.Invoke(() =>
         {
-            if (SelectedPeer?.UserName == args.FromUser)
-                IsPeerTyping = args.IsTyping;
+            if (SelectedPeer?.UserName == e.FromUser)
+                IsPeerTyping = e.IsTyping;
         });
     }
 
-    // ─── Helpers ─────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────
 
-    private void UpsertPeer(string userName, string displayName, string ip, int port)
+    private void UpsertOnlineUser(PeerUser peer)
     {
-        var existing = OnlineUsers.FirstOrDefault(u => u.UserName == userName);
-        if (existing is null)
-        {
-            OnlineUsers.Add(new PeerUser
-            {
-                UserName    = userName,
-                DisplayName = displayName,
-                IpAddress   = ip,
-                GrpcPort    = port,
-                Status      = UserStatus.Online
-            });
-        }
+        var existing = OnlineUsers.FirstOrDefault(u => u.UserName == peer.UserName);
+        if (existing is null) OnlineUsers.Add(peer);
         else
         {
-            existing.IpAddress   = ip;
-            existing.GrpcPort    = port;
-            existing.DisplayName = displayName;
+            existing.IpAddress   = peer.IpAddress;
+            existing.GrpcPort    = peer.GrpcPort;
+            existing.DisplayName = peer.DisplayName;
             existing.Status      = UserStatus.Online;
         }
+        OnPropertyChanged(nameof(NetworkSummary));
     }
 
-    private void AddMessageToUi(
-        string id, string from, string to, string content,
-        DateTime timestamp, bool isMine)
-    {
-        Messages.Add(new ChatMessage
-        {
-            Id        = id,
-            FromUser  = from,
-            ToUser    = to,
-            Content   = content,
-            Timestamp = timestamp,
-            IsMine    = isMine
-        });
-    }
+    private void AddMessageToUi(string id, string from, string to, string content,
+        DateTime ts, bool isMine)
+        => Messages.Add(new ChatMessage(id, from, to, content, ts, isMine));
 
     private static int FindFreePort()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
+        var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
         return port;
     }
 
@@ -445,4 +354,5 @@ public partial class MainViewModel : ObservableObject
         catch { return "127.0.0.1"; }
     }
 }
+
 

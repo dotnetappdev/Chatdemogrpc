@@ -3,8 +3,9 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ChatApp.Core.Interfaces;
 
-namespace ChatApp.Client.Services;
+namespace ChatApp.Core.Services;
 
 /// <summary>
 /// UDP broadcast-based peer discovery.
@@ -19,7 +20,7 @@ namespace ChatApp.Client.Services;
 ///
 /// No server, no configuration — works on any IPv4 LAN.
 /// </summary>
-public sealed class UdpDiscoveryService : IDisposable
+public sealed class UdpDiscoveryService : IDiscoveryService, IDisposable
 {
     // ── Constants ─────────────────────────────────────────────────────────
     public const int DiscoveryPort   = 45678;
@@ -208,9 +209,4 @@ public class DiscoveryPacket
     [JsonPropertyName("grpcPort")]
     public int GrpcPort { get; set; }
 }
-
-public record DiscoveredPeer(
-    string UserName,
-    string DisplayName,
-    string IpAddress,
-    int GrpcPort);
+// DiscoveredPeer is defined in ChatApp.Core.Interfaces.IDiscoveryService

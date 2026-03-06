@@ -2,7 +2,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using ChatApp.Shared.Models;
 
-namespace ChatApp.Client.Services;
+namespace ChatApp.Core.Services;
 
 /// <summary>
 /// REST API client for the ChatApp.WebApi - handles user directory and message history.

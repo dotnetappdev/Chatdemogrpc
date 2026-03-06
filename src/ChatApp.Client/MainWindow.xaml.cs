@@ -2,7 +2,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using ChatApp.Client.Models;
+using ChatApp.Core.Models;
 using ChatApp.Client.ViewModels;
 
 namespace ChatApp.Client;

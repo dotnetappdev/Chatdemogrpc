@@ -7,56 +7,58 @@ A .NET 10 peer-to-peer WPF chat application demonstrating **gRPC**, **UDP auto-d
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  PC A                              PC B                       │
-│  ┌──────────────────┐              ┌──────────────────┐       │
-│  │  ChatApp.Client  │◄─── gRPC ───►│  ChatApp.Client  │       │
-│  │  (WPF + gRPC     │              │  (WPF + gRPC     │       │
-│  │   server on      │              │   server on      │       │
-│  │   random port)   │              │   random port)   │       │
-│  └────────┬─────────┘              └────────┬─────────┘       │
-│           │  UDP broadcast (port 45678)      │                 │
-│           └──────────── LAN ─────────────────┘                │
-└──────────────────────────────────────────────────────────────┘
-                          │ optional
-                ┌─────────▼──────────┐
-                │  ChatApp.WebApi    │
-                │  REST API :5000    │
-                │  SQLite (default)  │
-                │  or SQL Server     │
-                └────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  PC A                                  PC B                           │
+│  ┌──────────────────────┐              ┌──────────────────────┐       │
+│  │  ChatApp.Client (WPF)│◄─ gRPC P2P ─►│  ChatApp.Client (WPF)│       │
+│  │  (thin UI layer only)│              │  (thin UI layer only)│       │
+│  └──────────┬───────────┘              └──────────┬───────────┘       │
+│             │   references                         │                   │
+│  ┌──────────▼───────────────────────────────────────────────────┐     │
+│  │                     ChatApp.Core                              │     │
+│  │  UdpDiscoveryService  ·  PeerNetworkService (gossip)         │     │
+│  │  GrpcHostService      ·  PeerChatService (GetKnownPeers)     │     │
+│  │  HistoryService       ·  KnownPeersStore  ·  ApiService      │     │
+│  └───────────────────────────────────────────────────────────────┘    │
+│             │  UDP broadcast  (port 45678)                             │
+│             └──────────────────────────────────────────────────────── │
+└──────────────────────────────────────────────────────────────────────┘
+                               │ optional
+                    ┌──────────▼───────────┐
+                    │   ChatApp.WebApi      │
+                    │   REST API :5000      │
+                    │   SQLite (default)    │  ◄── ChatApp.Data
+                    │   or SQL Server       │
+                    └───────────────────────┘
 ```
 
-### How peer discovery works
+### Project structure
+
+| Project | Layer | Description |
+|---|---|---|
+| `ChatApp.Shared` | Shared | gRPC proto file, DTO models |
+| `ChatApp.Data` | Data | EF Core — `User`/`Message` entities, repositories |
+| `ChatApp.Core` | **Business logic** | All services + interfaces — no WPF dependency |
+| `ChatApp.WebApi` | API | .NET 10 REST API (optional, SQLite or SQL Server) |
+| `ChatApp.Client` | UI | WPF thin layer — ViewModels, Views, Converters only |
+| `tests/ChatApp.Core.Tests` | Tests | 22 unit tests for Core services |
+| `tests/ChatApp.Data.Tests` | Tests | 14 unit tests for repositories |
+| `tests/ChatApp.WebApi.Tests` | Tests | 18 unit tests for API controllers |
+
+### How decentralised discovery works
 
 1. Each client starts an embedded **gRPC HTTP/2 server** on a random free port.
-2. The client broadcasts a **UDP packet** (`port 45678`) to `255.255.255.255` containing its username, display name, and gRPC port.
-3. Every other running client on the same subnet receives the packet, does a **gRPC Ping** to confirm reachability, and adds the peer to the contacts list — automatically.
-4. A **heartbeat** is sent every 15 seconds; peers that miss 3 heartbeats are removed.
-5. A **"bye"** packet is broadcast on graceful shutdown.
+2. The client broadcasts a **UDP packet** (`port 45678`) to `255.255.255.255`.
+3. On discovery, a **gRPC Ping** confirms reachability.
+4. The client calls **`GetKnownPeers`** (new gossip RPC) — the peer returns its known-peers list.
+5. The client connects to each of those peers too (one-hop gossip → full mesh).
+6. All seen peers are **persisted to local SQLite**; on next launch they're reconnected directly.
+7. A **heartbeat** is sent every 15 seconds; stale peers are evicted after 50 seconds.
+8. A **"bye"** UDP packet is broadcast on graceful shutdown.
 
-> No server, no configuration — just launch on two PCs on the same network.
+> No server, no configuration — launch on any two PCs on the same LAN and they find each other automatically. For cross-network, add one peer manually and the gossip propagates your full mesh.
 
-### Optional REST API
 
-The REST API (`ChatApp.WebApi`) adds:
-- Centralised user directory (who's online, their gRPC endpoint)
-- Shared message history across devices (stored in SQLite or SQL Server)
-
-Leave the **API URL** field blank in the login screen to run in pure P2P mode. All messages are always saved locally in SQLite regardless.
-
----
-
-## Projects
-
-| Project | Description |
-|---|---|
-| `ChatApp.Shared` | gRPC proto file (`chat.proto`), shared DTOs |
-| `ChatApp.Data` | EF Core data layer — `User`, `Message` entities, repositories |
-| `ChatApp.WebApi` | .NET 10 REST API — user registry + message history |
-| `ChatApp.Client` | WPF chat client — gRPC P2P server + UDP discovery + clean UI |
-
----
 
 ## Getting Started
 

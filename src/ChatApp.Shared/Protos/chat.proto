@@ -4,20 +4,28 @@ option csharp_namespace = "ChatApp.Shared.Grpc";
 
 package chat;
 
-// P2P Chat Service - each client hosts this service for direct peer communication
+// P2P Chat Service — every node hosts this service.
+// Peers connect directly; there is no central server.
 service ChatService {
-    // Send a direct message to this peer
+    // Send a direct message to this peer (unary)
     rpc SendMessage (SendMessageRequest) returns (SendMessageResponse);
 
-    // Subscribe to receive messages via server-streaming (push from peer)
+    // Subscribe to receive pushed messages (server-streaming)
     rpc Subscribe (SubscribeRequest) returns (stream ChatMessageProto);
 
-    // Ping to check if a peer is online
+    // Health-check — also used to confirm a peer is reachable before adding it
     rpc Ping (PingRequest) returns (PingResponse);
 
-    // Notify that user is typing
+    // Typing indicator (fire-and-forget unary)
     rpc SendTypingIndicator (TypingRequest) returns (TypingResponse);
+
+    // Decentralised peer exchange — "tell me who you know"
+    // Enables mesh discovery beyond the local subnet: when you connect to any
+    // peer you call this and learn their peers, then connect to those too.
+    rpc GetKnownPeers (GetKnownPeersRequest) returns (GetKnownPeersResponse);
 }
+
+// ── Messages ──────────────────────────────────────────────────────────────
 
 message SendMessageRequest {
     ChatMessageProto message = 1;
@@ -68,4 +76,23 @@ message TypingRequest {
 
 message TypingResponse {
     bool acknowledged = 1;
+}
+
+// ── Peer exchange (gossip) ─────────────────────────────────────────────────
+
+message GetKnownPeersRequest {
+    string requesting_user = 1;
+}
+
+message GetKnownPeersResponse {
+    repeated PeerInfo peers = 1;
+}
+
+// A peer entry returned during gossip / peer exchange
+message PeerInfo {
+    string user_name = 1;
+    string display_name = 2;
+    string ip_address = 3;
+    int32 grpc_port = 4;
+    int64 last_seen_unix_utc = 5;
 }

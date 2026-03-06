@@ -1,8 +1,14 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/ChatApp.Client/ChatApp.Client.csproj" />
+    <Project Path="src/ChatApp.Core/ChatApp.Core.csproj" />
     <Project Path="src/ChatApp.Data/ChatApp.Data.csproj" />
     <Project Path="src/ChatApp.Shared/ChatApp.Shared.csproj" />
     <Project Path="src/ChatApp.WebApi/ChatApp.WebApi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ChatApp.Core.Tests/ChatApp.Core.Tests.csproj" />
+    <Project Path="tests/ChatApp.Data.Tests/ChatApp.Data.Tests.csproj" />
+    <Project Path="tests/ChatApp.WebApi.Tests/ChatApp.WebApi.Tests.csproj" />
   </Folder>
 </Solution>
